@@ -1,0 +1,150 @@
+- name: Setup Tomcat on Dev Server
+  hosts: dev
+  become: yes
+  vars:
+    tomcat_version: "10.1.28"
+    tomcat_tarball: "apache-tomcat-10.1.28.tar.gz"
+    tomcat_url: "https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.28/bin/apache-tomcat-10.1.28.tar.gz"
+    tomcat_install_dir: "/usr/local/tomcat"
+    tomcat_service_file: "/etc/systemd/system/tomcat.service"
+    java_version: "11.0.24"
+    java_url: "https://corretto.aws/downloads/latest/amazon-corretto-11-x64-linux-jdk.tar.gz"
+    java_install_dir: "/usr/local/java"
+    java_tarball: "amazon-corretto-11-x64-linux-jdk.tar.gz"
+    java_extracted_dir: "amazon-corretto-11.0.24.8.1-linux-x64"
+
+  tasks:
+    - name: Ensure the system is up to date
+      dnf:
+        name: '*'
+        state: latest
+
+    - name: Create directory for Java installation
+      file:
+        path: "{{ java_install_dir }}"
+        state: directory
+
+    - name: Download Amazon Corretto JDK
+      get_url:
+        url: "{{ java_url }}"
+        dest: "/tmp/{{ java_tarball }}"
+
+    - name: Install Amazon Corretto JDK
+      unarchive:
+        src: "/tmp/{{ java_tarball }}"
+        dest: "{{ java_install_dir }}"
+        remote_src: yes
+
+    - name: Set up Java environment variables
+      lineinfile:
+        path: /etc/profile
+        line: 'export JAVA_HOME={{ java_install_dir }}/{{ java_extracted_dir }}'
+        create: yes
+        state: present
+
+    - name: Add JAVA_HOME to PATH
+      lineinfile:
+        path: /etc/profile
+        line: 'export PATH=$JAVA_HOME/bin:$PATH'
+        create: yes
+        state: present
+
+    - name: Reload environment variables
+      shell: |
+        source /etc/profile
+        echo "JAVA_HOME=${JAVA_HOME}" > /etc/profile.d/java.sh
+        echo "PATH=${PATH}" >> /etc/profile.d/java.sh
+      changed_when: false
+
+    - name: Verify Java installation
+      command: "{{ java_install_dir }}/{{ java_extracted_dir }}/bin/java -version"
+      register: java_version_output
+      failed_when: "'openjdk version' not in java_version_output.stderr"
+      changed_when: false
+
+    - name: Install required packages
+      dnf:
+        name:
+          - aws-cli
+          - wget
+        state: present
+
+    - name: Create tomcat user
+      user:
+        name: tomcat
+        shell: /bin/false
+        create_home: no
+
+    - name: Download Tomcat
+      get_url:
+        url: "{{ tomcat_url }}"
+        dest: "/tmp/{{ tomcat_tarball }}"
+
+    - name: Extract Tomcat
+      unarchive:
+        src: "/tmp/{{ tomcat_tarball }}"
+        dest: "{{ tomcat_install_dir }}"
+        remote_src: yes
+
+    - name: Set permissions on Tomcat directory
+      file:
+        path: "{{ tomcat_install_dir }}"
+        state: directory
+        recurse: yes
+        owner: tomcat
+        group: tomcat
+
+    - name: Check if Tomcat ports are free
+      shell: |
+        if lsof -i :8005; then
+          echo "Port 8005 is in use"
+          exit 1
+        fi
+        if lsof -i :8080; then
+          echo "Port 8080 is in use"
+          exit 1
+        fi
+      register: port_check
+      failed_when: "'Port 8005 is in use' in port_check.stdout or 'Port 8080 is in use' in port_check.stdout"
+
+    - name: Create systemd service file for Tomcat
+      copy:
+        dest: "{{ tomcat_service_file }}"
+        content: |
+          [Unit]
+          Description=Apache Tomcat Web Application Container
+          After=network.target
+
+          [Service]
+          Type=forking
+          User=tomcat
+          Group=tomcat
+          Environment="JAVA_HOME={{ java_install_dir }}/{{ java_extracted_dir }}"
+          Environment="CATALINA_PID=/run/tomcat.pid"
+          Environment="CATALINA_HOME={{ tomcat_install_dir }}"
+          Environment="CATALINA_BASE={{ tomcat_install_dir }}"
+          ExecStart={{ tomcat_install_dir }}/bin/startup.sh
+          ExecStop={{ tomcat_install_dir }}/bin/shutdown.sh
+          Restart=on-failure
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd to pick up new Tomcat service
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start Tomcat service
+      systemd:
+        name: tomcat
+        enabled: yes
+        state: started
+        
+
+  handlers:
+    - name: Restart Tomcat
+      systemd:
+        name: tomcat
+        state: restarted
+

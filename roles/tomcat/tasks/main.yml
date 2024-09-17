@@ -1,0 +1,77 @@
+- name: Ensure the Tomcat installation directory exists
+  file:
+    path: /usr/local/tomcat
+    state: directory
+
+- name: Deploy Tomcat tarball
+  get_url:
+    url: "{{ tomcat_url }}"
+    dest: /tmp/apache-tomcat-{{ tomcat_version }}.tar.gz
+
+- name: Extract Tomcat tarball
+  unarchive:
+    src: /tmp/apache-tomcat-{{ tomcat_version }}.tar.gz
+    dest: /usr/local/tomcat
+    remote_src: yes
+    creates: /usr/local/tomcat/apache-tomcat-{{ tomcat_version }}
+
+- name: Set ownership and permissions for Tomcat
+  file:
+    path: /usr/local/tomcat/apache-tomcat-{{ tomcat_version }}
+    state: directory
+    recurse: yes
+    owner: tomcat
+    group: tomcat
+
+- name: Deploy Tomcat configuration
+  template:
+    src: tomcat-users.xml.j2
+    dest: /usr/local/tomcat/apache-tomcat-{{ tomcat_version }}/conf/tomcat-users.xml
+  notify: Restart Tomcat
+
+- name: Create systemd service file for Tomcat
+  copy:
+    dest: /etc/systemd/system/tomcat.service
+    content: |
+      [Unit]
+      Description=Apache Tomcat Web Application Container
+      After=network.target
+
+      [Service]
+      Type=forking
+      User=tomcat
+      Group=tomcat
+      Environment="JAVA_OPTS=-Djava.awt.headless=true"
+      Environment="CATALINA_PID=/run/tomcat.pid"
+      Environment="CATALINA_HOME=/usr/local/tomcat/apache-tomcat-{{ tomcat_version }}"
+      Environment="CATALINA_BASE=/usr/local/tomcat/apache-tomcat-{{ tomcat_version }}"
+      ExecStart=/usr/local/tomcat/apache-tomcat-{{ tomcat_version }}/bin/startup.sh
+      ExecStop=/usr/local/tomcat/apache-tomcat-{{ tomcat_version }}/bin/shutdown.sh
+      Restart=on-failure
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Reload systemd to pick up new Tomcat service
+  systemd:
+    daemon_reload: yes
+
+- name: Ensure Tomcat service is enabled and started
+  systemd:
+    name: tomcat
+    state: started
+    enabled: yes
+
+- name: Ensure Tomcat watch service is enabled and started
+  systemd:
+    name: tomcat-watch
+    state: started
+    enabled: yes
+
+# Handlers
+handlers:
+  - name: Restart Tomcat
+    systemd:
+      name: tomcat
+      state: restarted
+
